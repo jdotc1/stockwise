@@ -4,12 +4,25 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-/// HTTP client with the timeouts every broker call uses.
+/// HTTP client with the timeouts every broker call uses. Broker credentials
+/// must never follow a redirect to a different scheme, host, or port.
 pub fn client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("stockwise-cli/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let same_origin = attempt.previous().first().is_some_and(|original| {
+                original.scheme() == attempt.url().scheme()
+                    && original.host_str() == attempt.url().host_str()
+                    && original.port_or_known_default() == attempt.url().port_or_known_default()
+            });
+            if same_origin && attempt.previous().len() < 10 {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .build()?)
 }
 
@@ -217,6 +230,56 @@ pub fn sha256_hex(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn broker_client_does_not_follow_cross_origin_redirect_with_credentials() {
+        use crate::testutil::MockServer;
+
+        let destination = MockServer::start(vec![(200, "{}".into())]).await;
+        let redirect = MockServer::start_with_headers(vec![(
+            307,
+            vec![("location".into(), format!("{}/capture", destination.url))],
+            String::new(),
+        )])
+        .await;
+
+        let response = client()
+            .unwrap()
+            .post(format!("{}/order", redirect.url))
+            .header("Authorization", "Bearer synthetic-credential")
+            .header("X-PrivateKey", "synthetic-secret")
+            .body("synthetic-order-body")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(redirect.requests().len(), 1);
+        assert!(destination.requests().is_empty(), "redirect forwarded a request to another origin");
+    }
+
+    #[tokio::test]
+    async fn broker_client_still_follows_same_origin_redirects() {
+        use crate::testutil::MockServer;
+
+        let server = MockServer::start_with_headers(vec![
+            (302, vec![("location".into(), "/next".into())], String::new()),
+            (200, Vec::new(), "{}".into()),
+        ])
+        .await;
+        let response = client()
+            .unwrap()
+            .get(format!("{}/start", server.url))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].target, "/start");
+        assert_eq!(requests[1].target, "/next");
+    }
 
     #[test]
     fn query_param_reads_redirect_urls_and_bare_values() {
