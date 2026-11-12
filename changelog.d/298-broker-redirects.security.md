@@ -1,0 +1,1 @@
+- `stockwise trade` no longer follows broker API redirects to a different origin, preventing authentication headers and request bodies from being sent there ([#298](https://github.com/iamsaquib8/stockwise/issues/298)). Thanks [@jdotc1](https://github.com/jdotc1).

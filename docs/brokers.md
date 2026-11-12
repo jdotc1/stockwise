@@ -69,6 +69,10 @@ state is **unknown** — check the broker app or `stockwise trade orders` before
 retrying, so you don't place it twice. Cancelling a GTT goes through the same
 preview, opt-in and confirmation.
 
+Broker API requests only follow redirects within the same scheme, host and
+port. A redirect to another origin is not followed, so authentication headers
+and order bodies are not forwarded to a different server.
+
 The paper-trading daemon never sends broker orders.
 
 ## Order types
